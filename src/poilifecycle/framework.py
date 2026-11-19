@@ -8,6 +8,7 @@ from lxml import html as _lh
 
 from .config import SPEC
 from .store import Store
+from . import location
 
 
 # --------------------------------------------------------------------------- #
@@ -188,6 +189,12 @@ def run(mode="full", con=None):
         norm, dup_in_batch = dedup(norm)
         norm = _apply_kernel(norm)
 
+        # Location adjudication runs on the whole normalised batch, before the
+        # incremental watermark filter, so a backfilled ("missing report")
+        # observation is still recorded and explained even when the legacy
+        # incremental mode does not ingest it into the records table.
+        decisions = location.adjudicate(store, norm)
+
         wm = store.watermark()
         if mode == "incremental" and wm:
             norm = [r for r in norm if str(r.get("ts", "")) > wm]
@@ -200,7 +207,8 @@ def run(mode="full", con=None):
         return {"engine": "crawl", "mode": mode, "fetched": len(records),
                 "duplicates": dup_in_batch, "ingested": ingested, "count": total,
                 "http_attempts": attempts, "slept": round(sleeper.slept, 4),
-                "watermark": store.watermark()}
+                "watermark": store.watermark(),
+                "locations": location.summarize(decisions)}
     finally:
         if own:
             con.close()
@@ -284,6 +292,7 @@ def run_rpa(con=None):
         norm = [normalize(dict(it)) for it in items]
         norm, dup = dedup(norm)
         norm = _apply_kernel(norm)
+        decisions = location.adjudicate(store, norm)
         ingested = sum(1 for x in norm if store.upsert(x))
         total = store.count()
         created = dedup_submit = 0
@@ -301,7 +310,8 @@ def run_rpa(con=None):
         return {"engine": "rpa", "logged_in": logged, "captcha_solved": r.captcha_solved,
                 "collected": len(items), "fetched": len(items), "duplicates": dup,
                 "ingested": ingested, "count": total,
-                "submit_created": created, "submit_dedup": dedup_submit, "log": r.log}
+                "submit_created": created, "submit_dedup": dedup_submit, "log": r.log,
+                "locations": location.summarize(decisions)}
     finally:
         if own:
             con.close()
